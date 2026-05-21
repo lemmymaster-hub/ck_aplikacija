@@ -1,6 +1,18 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Supabase.initialize(
+    url: 'https://vqudfifcvnyabltlpchq.supabase.co',
+    anonKey: 'sb_publishable_wrpEuHLBa_uqHP7bPwSNLw_4JFf1vwc',
+  );
+
   runApp(const JavneNabavkeApp());
 }
 
@@ -13,21 +25,386 @@ class JavneNabavkeApp extends StatelessWidget {
       title: 'Javne Nabavke AI',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(useMaterial3: true, fontFamily: 'Segoe UI'),
-      home: const MainScreen(),
+      home: const LoginScreen(),
+    );
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final imeController = TextEditingController();
+  final prezimeController = TextEditingController();
+  final emailController = TextEditingController();
+  final lozinkaController = TextEditingController();
+
+  PlatformFile? digitalniPotpis;
+  bool loading = false;
+  bool registracija = false;
+
+  final supabase = Supabase.instance.client;
+
+  Future<void> odaberiDigitalniPotpis() async {
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: false,
+      type: FileType.custom,
+      allowedExtensions: ['png', 'pdf'],
+    );
+
+    if (result != null && result.files.isNotEmpty) {
+      setState(() {
+        digitalniPotpis = result.files.first;
+      });
+    }
+  }
+
+  Future<String?> uploadPotpisa(String userId) async {
+    if (digitalniPotpis == null || digitalniPotpis!.path == null) return null;
+
+    final file = File(digitalniPotpis!.path!);
+    final bytes = await file.readAsBytes();
+    final ext = digitalniPotpis!.extension?.toLowerCase() ?? 'pdf';
+    final safeName = digitalniPotpis!.name.replaceAll(
+      RegExp(r'[^a-zA-Z0-9._-]'),
+      '_',
+    );
+    final filePath =
+        '$userId/${DateTime.now().millisecondsSinceEpoch}_$safeName';
+
+    await supabase.storage
+        .from('potpisi')
+        .uploadBinary(
+          filePath,
+          bytes,
+          fileOptions: FileOptions(
+            upsert: true,
+            contentType: ext == 'png' ? 'image/png' : 'application/pdf',
+          ),
+        );
+
+    return supabase.storage.from('potpisi').getPublicUrl(filePath);
+  }
+
+  Future<Map<String, dynamic>> ucitajProfil(String userId, String email) async {
+    final response = await supabase
+        .from('korisnici')
+        .select()
+        .eq('auth_user_id', userId)
+        .maybeSingle();
+
+    if (response == null) {
+      return {
+        'ime': 'Korisnik',
+        'prezime': '',
+        'email': email,
+        'potpis_url': null,
+      };
+    }
+
+    return Map<String, dynamic>.from(response);
+  }
+
+  Future<void> registrujKorisnika() async {
+    if (imeController.text.trim().isEmpty ||
+        prezimeController.text.trim().isEmpty ||
+        emailController.text.trim().isEmpty ||
+        lozinkaController.text.trim().isEmpty ||
+        digitalniPotpis == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Popuni ime, prezime, email, lozinku i učitaj digitalni potpis.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (lozinkaController.text.trim().length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Lozinka mora imati najmanje 6 karaktera.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => loading = true);
+
+    try {
+      final authResponse = await supabase.auth.signUp(
+        email: emailController.text.trim(),
+        password: lozinkaController.text.trim(),
+      );
+
+      final user = authResponse.user;
+      if (user == null) {
+        throw Exception('Registracija nije uspjela. Korisnik nije kreiran.');
+      }
+
+      final potpisUrl = await uploadPotpisa(user.id);
+
+      final profil = {
+        'auth_user_id': user.id,
+        'ime': imeController.text.trim(),
+        'prezime': prezimeController.text.trim(),
+        'email': emailController.text.trim(),
+        'potpis_url': potpisUrl,
+      };
+
+      await supabase.from('korisnici').insert(profil);
+
+      if (!mounted) return;
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => MainScreen(userProfile: profil)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Greška pri registraciji: $e')));
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<void> prijaviKorisnika() async {
+    if (emailController.text.trim().isEmpty ||
+        lozinkaController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Unesi email i lozinku.')));
+      return;
+    }
+
+    setState(() => loading = true);
+
+    try {
+      final authResponse = await supabase.auth.signInWithPassword(
+        email: emailController.text.trim(),
+        password: lozinkaController.text.trim(),
+      );
+
+      final user = authResponse.user;
+      if (user == null) {
+        throw Exception('Prijava nije uspjela.');
+      }
+
+      final profil = await ucitajProfil(
+        user.id,
+        user.email ?? emailController.text.trim(),
+      );
+
+      if (!mounted) return;
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => MainScreen(userProfile: profil)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Greška pri prijavi: $e')));
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF4F7FA),
+      body: Center(
+        child: SingleChildScrollView(
+          child: Container(
+            width: 460,
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(22),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.10),
+                  blurRadius: 25,
+                  offset: const Offset(0, 12),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.gavel_rounded,
+                  size: 58,
+                  color: Color(0xFF102A43),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Javne Nabavke AI',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF102A43),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  registracija ? 'Registracija korisnika' : 'Prijava korisnika',
+                  style: const TextStyle(color: Colors.black54),
+                ),
+                const SizedBox(height: 28),
+
+                if (registracija) ...[
+                  TextField(
+                    controller: imeController,
+                    decoration: InputDecoration(
+                      labelText: 'Ime',
+                      prefixIcon: const Icon(Icons.person_outline),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: prezimeController,
+                    decoration: InputDecoration(
+                      labelText: 'Prezime',
+                      prefixIcon: const Icon(Icons.person_outline),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
+                TextField(
+                  controller: emailController,
+                  decoration: InputDecoration(
+                    labelText: 'Email',
+                    prefixIcon: const Icon(Icons.email_outlined),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: lozinkaController,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    labelText: 'Lozinka',
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ),
+
+                if (registracija) ...[
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: OutlinedButton.icon(
+                      onPressed: loading ? null : odaberiDigitalniPotpis,
+                      icon: const Icon(Icons.draw),
+                      label: Text(
+                        digitalniPotpis == null
+                            ? 'Učitaj digitalni potpis PNG/PDF'
+                            : digitalniPotpis!.name,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                  if (digitalniPotpis != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      'Potpis učitan: ${digitalniPotpis!.name}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Color(0xFF1F78B4),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ],
+
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: loading
+                        ? null
+                        : registracija
+                        ? registrujKorisnika
+                        : prijaviKorisnika,
+                    child: loading
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Text(registracija ? 'Registruj se' : 'Prijavi se'),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: loading
+                      ? null
+                      : () {
+                          setState(() {
+                            registracija = !registracija;
+                          });
+                        },
+                  child: Text(
+                    registracija
+                        ? 'Već imaš nalog? Prijavi se'
+                        : 'Nemaš nalog? Registruj se',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
 
 class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+  final Map<String, dynamic> userProfile;
+
+  const MainScreen({super.key, required this.userProfile});
 
   @override
   State<MainScreen> createState() => _MainScreenState();
 }
 
 class _MainScreenState extends State<MainScreen> {
+  Map<String, dynamic>? korisnik;
+
+  List<Map<String, dynamic>> registrovaniKorisnici = [];
+
+  String? clanKomisije1;
+  String? clanKomisije2;
+  String? clanKomisije3;
   int selectedIndex = 0;
   List<bool> prikaziFormu = [false, false, false];
+  List<PlatformFile> dokumenti = [];
+  PlatformFile? dokumentZaPreview;
+  bool prikaziPreview = false;
   final nazivController = TextEditingController();
   String organizacija = 'Društvo CK';
   final predmetController = TextEditingController();
@@ -55,6 +432,13 @@ class _MainScreenState extends State<MainScreen> {
     Icons.picture_as_pdf,
     Icons.settings,
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    korisnik = widget.userProfile;
+    ucitajRegistrovaneKorisnike();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -144,12 +528,92 @@ class _MainScreenState extends State<MainScreen> {
     return Container(
       color: const Color(0xFFF4F7FA),
       padding: const EdgeInsets.all(30),
-      child: selectedIndex == 1
-          ? javneNabavkeScreen()
-          : selectedIndex == 2
-          ? ponudjaciScreen()
-          : dashboardScreen(),
+
+      child: Column(
+        children: [
+          /// GORNJI PROFIL BAR
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  CircleAvatar(
+                    radius: 22,
+                    backgroundColor: Colors.red.shade100,
+                    child: const Icon(Icons.person, color: Colors.red),
+                  ),
+
+                  const SizedBox(width: 12),
+
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "${korisnik?['ime'] ?? ''} ${korisnik?['prezime'] ?? ''}",
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+
+                      Text(
+                        korisnik?['email'] ?? '',
+                        style: const TextStyle(
+                          color: Colors.black54,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 8),
+
+              TextButton.icon(
+                onPressed: () async {
+                  await Supabase.instance.client.auth.signOut();
+
+                  Navigator.pushAndRemoveUntil(
+                    context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()),
+                    (route) => false,
+                  );
+                },
+
+                icon: const Icon(Icons.logout, size: 18),
+                label: const Text('Odjava'),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 25),
+
+          /// SADRŽAJ EKRANA
+          Expanded(
+            child: selectedIndex == 1
+                ? javneNabavkeScreen()
+                : selectedIndex == 2
+                ? ponudjaciScreen()
+                : selectedIndex == 3
+                ? dokumentiScreen()
+                : dashboardScreen(),
+          ),
+        ],
+      ),
     );
+  }
+
+  Future<void> ucitajRegistrovaneKorisnike() async {
+    final response = await Supabase.instance.client
+        .from('korisnici')
+        .select()
+        .order('ime', ascending: true);
+
+    setState(() {
+      registrovaniKorisnici = List<Map<String, dynamic>>.from(response);
+    });
   }
 
   Widget dashboardScreen() {
@@ -183,6 +647,331 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  Future<void> ucitajNoviDokument() async {
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: false,
+      type: FileType.custom,
+      allowedExtensions: [
+        'pdf',
+        'doc',
+        'docx',
+        'xls',
+        'xlsx',
+        'jpg',
+        'jpeg',
+        'png',
+      ],
+    );
+
+    if (result != null && result.files.isNotEmpty) {
+      setState(() {
+        dokumentZaPreview = result.files.first;
+        prikaziPreview = true;
+      });
+    }
+  }
+
+  Widget prikazPreviewa(PlatformFile doc) {
+    final ext = doc.extension?.toLowerCase();
+
+    if (doc.path == null) {
+      return const Center(child: Text('Nije moguće prikazati dokument.'));
+    }
+
+    if (ext == 'jpg' || ext == 'jpeg' || ext == 'png') {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Image.file(
+          File(doc.path!),
+          fit: BoxFit.contain,
+          width: double.infinity,
+        ),
+      );
+    }
+
+    if (ext == 'pdf') {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SfPdfViewer.file(File(doc.path!)),
+      );
+    }
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.description, size: 80, color: Color(0xFF102A43)),
+          const SizedBox(height: 15),
+          Text(
+            doc.name,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 10),
+
+          const Text(
+            'Word/Excel dokument se može otvoriti u programu na računaru.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.black54),
+          ),
+
+          const SizedBox(height: 20),
+
+          ElevatedButton.icon(
+            onPressed: () {
+              OpenFilex.open(doc.path!);
+            },
+            icon: const Icon(Icons.open_in_new),
+            label: const Text('Otvori dokument'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget dokumentiScreen() {
+    return Stack(
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 72),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              title('Dokumenti'),
+              const SizedBox(height: 8),
+              const Text(
+                'Učitavanje, pregled i potvrda dokumenata za postupak javne nabavke.',
+                style: TextStyle(fontSize: 16, color: Colors.black54),
+              ),
+              const SizedBox(height: 25),
+
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    /// LIJEVA STRANA
+                    Expanded(
+                      flex: 2,
+                      child: Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: boxDecoration(),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: ucitajNoviDokument,
+                              icon: const Icon(Icons.upload_file),
+                              label: const Text('Učitaj novi dokument'),
+                            ),
+
+                            const SizedBox(height: 25),
+
+                            const Text(
+                              'Potvrđeni dokumenti',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF102A43),
+                              ),
+                            ),
+
+                            const SizedBox(height: 12),
+
+                            Expanded(
+                              child: dokumenti.isEmpty
+                                  ? const Text(
+                                      'Još nema potvrđenih dokumenata.',
+                                      style: TextStyle(color: Colors.black54),
+                                    )
+                                  : ListView.builder(
+                                      itemCount: dokumenti.length,
+                                      itemBuilder: (context, index) {
+                                        final doc = dokumenti[index];
+
+                                        return Padding(
+                                          padding: const EdgeInsets.only(
+                                            bottom: 10,
+                                          ),
+                                          child: InkWell(
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                            onTap: () {
+                                              setState(() {
+                                                dokumentZaPreview = doc;
+                                                prikaziPreview = true;
+                                              });
+                                            },
+                                            child: Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 12,
+                                                    vertical: 10,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFF4F7FA),
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                                border: Border.all(
+                                                  color: Colors.grey.shade300,
+                                                ),
+                                              ),
+                                              child: Row(
+                                                children: [
+                                                  const Icon(
+                                                    Icons.link,
+                                                    size: 18,
+                                                    color: Color(0xFF1F78B4),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Text(
+                                                      doc.name,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: const TextStyle(
+                                                        color: Color(
+                                                          0xFF1F78B4,
+                                                        ),
+                                                        decoration:
+                                                            TextDecoration
+                                                                .underline,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(width: 30),
+
+                    /// DESNA STRANA - STVARNI PREVIEW
+                    Expanded(
+                      flex: 3,
+                      child: prikaziPreview && dokumentZaPreview != null
+                          ? Column(
+                              children: [
+                                Expanded(
+                                  child: Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(18),
+                                      border: Border.all(
+                                        color: Colors.grey.shade300,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withOpacity(0.06),
+                                          blurRadius: 14,
+                                          offset: const Offset(0, 6),
+                                        ),
+                                      ],
+                                    ),
+                                    child: prikazPreviewa(dokumentZaPreview!),
+                                  ),
+                                ),
+
+                                const SizedBox(height: 15),
+
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    OutlinedButton.icon(
+                                      onPressed: () {
+                                        setState(() {
+                                          prikaziPreview = false;
+                                          dokumentZaPreview = null;
+                                        });
+                                      },
+                                      icon: const Icon(Icons.close),
+                                      label: const Text('Zatvori preview'),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    ElevatedButton.icon(
+                                      onPressed: () {
+                                        setState(() {
+                                          if (dokumentZaPreview != null &&
+                                              !dokumenti.any(
+                                                (doc) =>
+                                                    doc.name ==
+                                                        dokumentZaPreview!
+                                                            .name &&
+                                                    doc.path ==
+                                                        dokumentZaPreview!.path,
+                                              )) {
+                                            dokumenti.add(dokumentZaPreview!);
+                                          }
+
+                                          prikaziPreview = false;
+                                          dokumentZaPreview = null;
+                                        });
+                                      },
+                                      icon: const Icon(Icons.check),
+                                      label: const Text('Potvrdi'),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            )
+                          : Container(
+                              width: double.infinity,
+                              height: double.infinity,
+                              padding: const EdgeInsets.all(24),
+                              decoration: boxDecoration(),
+                              child: const Center(
+                                child: Text(
+                                  'Učitaj dokument da bi se ovdje prikazao preview.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    color: Colors.black54,
+                                  ),
+                                ),
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        /// FIKSNO DUGME DOLE DESNO
+        Positioned(
+          right: 0,
+          bottom: 0,
+          child: ElevatedButton.icon(
+            onPressed: dokumenti.isEmpty
+                ? null
+                : () {
+                    setState(() {
+                      prikaziPreview = false;
+                      dokumentZaPreview = null;
+                      selectedIndex = 0;
+                    });
+                  },
+            icon: const Icon(Icons.done_all),
+            label: const Text('Gotovo'),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget javneNabavkeScreen() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -206,6 +995,46 @@ class _MainScreenState extends State<MainScreen> {
                 dropdown(),
                 input('Procijenjena vrijednost', vrijednostController),
                 input('Kriterijum izbora', kriterijController),
+
+                const SizedBox(height: 10),
+
+                Row(
+                  children: [
+                    clanKomisijeDropdown(
+                      label: 'Član komisije 1',
+                      value: clanKomisije1,
+                      onChanged: (value) {
+                        setState(() {
+                          clanKomisije1 = value;
+                        });
+                      },
+                    ),
+
+                    const SizedBox(width: 12),
+
+                    clanKomisijeDropdown(
+                      label: 'Član komisije 2',
+                      value: clanKomisije2,
+                      onChanged: (value) {
+                        setState(() {
+                          clanKomisije2 = value;
+                        });
+                      },
+                    ),
+
+                    const SizedBox(width: 12),
+
+                    clanKomisijeDropdown(
+                      label: 'Član komisije 3',
+                      value: clanKomisije3,
+                      onChanged: (value) {
+                        setState(() {
+                          clanKomisije3 = value;
+                        });
+                      },
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 25),
                 Row(
                   children: [
@@ -227,6 +1056,12 @@ class _MainScreenState extends State<MainScreen> {
                         predmetController.clear();
                         vrijednostController.clear();
                         kriterijController.clear();
+
+                        setState(() {
+                          clanKomisije1 = null;
+                          clanKomisije2 = null;
+                          clanKomisije3 = null;
+                        });
                       },
                       icon: const Icon(Icons.delete_outline),
                       label: const Text('Očisti formu'),
@@ -528,6 +1363,44 @@ class _MainScreenState extends State<MainScreen> {
             organizacija = value!;
           });
         },
+      ),
+    );
+  }
+
+  Widget clanKomisijeDropdown({
+    required String label,
+    required String? value,
+    required Function(String?) onChanged,
+  }) {
+    final zauzeti = [clanKomisije1, clanKomisije2, clanKomisije3];
+
+    final dostupni = registrovaniKorisnici.where((korisnik) {
+      final id = korisnik['auth_user_id'].toString();
+
+      return value == id || !zauzeti.contains(id);
+    }).toList();
+
+    return Expanded(
+      child: DropdownButtonFormField<String>(
+        value: value,
+        decoration: InputDecoration(
+          labelText: label,
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+        items: dostupni.map((korisnik) {
+          final id = korisnik['auth_user_id'].toString();
+
+          final ime = korisnik['ime'] ?? '';
+          final prezime = korisnik['prezime'] ?? '';
+
+          return DropdownMenuItem<String>(
+            value: id,
+            child: Text('$ime $prezime'),
+          );
+        }).toList(),
+        onChanged: onChanged,
       ),
     );
   }
