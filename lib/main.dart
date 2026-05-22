@@ -4,6 +4,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:syncfusion_flutter_xlsio/xlsio.dart' as xlsio;
+import 'package:flutter/services.dart' show rootBundle;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -396,7 +400,7 @@ class _MainScreenState extends State<MainScreen> {
   Map<String, dynamic>? korisnik;
 
   List<Map<String, dynamic>> registrovaniKorisnici = [];
-
+  List<Map<String, dynamic>> javneNabavke = [];
   String? clanKomisije1;
   String? clanKomisije2;
   String? clanKomisije3;
@@ -438,6 +442,7 @@ class _MainScreenState extends State<MainScreen> {
     super.initState();
     korisnik = widget.userProfile;
     ucitajRegistrovaneKorisnike();
+    ucitajJavneNabavke();
   }
 
   @override
@@ -611,41 +616,473 @@ class _MainScreenState extends State<MainScreen> {
         .select()
         .order('ime', ascending: true);
 
+    if (!mounted) return;
+
     setState(() {
       registrovaniKorisnici = List<Map<String, dynamic>>.from(response);
     });
   }
 
-  Widget dashboardScreen() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        title('Dashboard'),
-        const SizedBox(height: 8),
-        const Text(
-          'AI sistem za analizu ponuda i pripremu dokumentacije javnih nabavki.',
-          style: TextStyle(fontSize: 16, color: Colors.black54),
-        ),
-        const SizedBox(height: 30),
-        Expanded(
-          child: GridView.count(
-            crossAxisCount: 3,
-            crossAxisSpacing: 20,
-            mainAxisSpacing: 20,
-            childAspectRatio: 1.7,
+  Future<void> ucitajJavneNabavke() async {
+    final response = await Supabase.instance.client
+        .from('javne_nabavke')
+        .select()
+        .order('created_at', ascending: false);
+
+    if (!mounted) return;
+
+    setState(() {
+      javneNabavke = List<Map<String, dynamic>>.from(response);
+    });
+  }
+String imeClanaKomisije(dynamic id) {
+  if (id == null) return '';
+
+  final korisnik = registrovaniKorisnici.firstWhere(
+    (k) => k['auth_user_id'] == id,
+    orElse: () => {},
+  );
+
+  return '${korisnik['ime'] ?? ''} ${korisnik['prezime'] ?? ''}'.trim();
+}
+Future<void> printajNabavku(Map<String, dynamic> nabavka) async {
+  final pdf = pw.Document();
+
+  final fontData = await rootBundle.load('assets/fonts/DejaVuSans.ttf');
+  final ttf = pw.Font.ttf(fontData);
+
+  pdf.addPage(
+    pw.Page(
+      theme: pw.ThemeData.withFont(
+        base: ttf,
+        bold: ttf,
+      ),
+      build: (context) {
+        return pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Text(
+              'Javna nabavka',
+              style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold),
+            ),
+            pw.SizedBox(height: 20),
+            pw.TableHelper.fromTextArray(
+              data: [
+                ['Polje', 'Vrijednost'],
+                ['Naziv', nabavka['naziv'] ?? ''],
+                ['Organizacija', nabavka['organizacija'] ?? ''],
+                ['Predmet', nabavka['predmet'] ?? ''],
+                ['Vrsta nabavke', nabavka['vrsta_nabavke'] ?? ''],
+                ['Procijenjena vrijednost', nabavka['procijenjena_vrijednost'] ?? ''],
+                ['Kriterijum izbora', nabavka['kriterijum_izbora'] ?? ''],
+                ['Član komisije 1', imeClanaKomisije(nabavka['clan_komisije_1'])],
+                ['Član komisije 2', imeClanaKomisije(nabavka['clan_komisije_2'])],
+                ['Član komisije 3', imeClanaKomisije(nabavka['clan_komisije_3'])],
+                ['Datum kreiranja', nabavka['created_at'] ?? ''],
+              ],
+            ),
+          ],
+        );
+      },
+    ),
+  );
+
+  await Printing.layoutPdf(
+    onLayout: (format) async => pdf.save(),
+  );
+}
+
+Future<void> snimiNabavkuNaRacunar(Map<String, dynamic> nabavka) async {
+  final izbor = await showDialog<String>(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: const Text('Izaberi format'),
+        content: const Text('U kojem formatu želiš snimiti dokument?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'pdf'),
+            child: const Text('PDF'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'excel'),
+            child: const Text('Excel'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (izbor == null) return;
+
+  final nazivFajla = 'javna_nabavka_${nabavka['id']}';
+
+  final putanja = await FilePicker.platform.saveFile(
+    dialogTitle: 'Snimi javnu nabavku',
+    fileName: izbor == 'pdf' ? '$nazivFajla.pdf' : '$nazivFajla.xlsx',
+    type: FileType.custom,
+    allowedExtensions: izbor == 'pdf' ? ['pdf'] : ['xlsx'],
+  );
+
+  if (putanja == null) return;
+String finalPutanja = putanja;
+
+if (izbor == 'pdf' &&
+    !finalPutanja.toLowerCase().endsWith('.pdf')) {
+  finalPutanja = '$finalPutanja.pdf';
+}
+
+if (izbor == 'excel' &&
+    !finalPutanja.toLowerCase().endsWith('.xlsx')) {
+  finalPutanja = '$finalPutanja.xlsx';
+}
+  if (izbor == 'pdf') {
+    final pdf = pw.Document();
+final fontData = await rootBundle.load('assets/fonts/DejaVuSans.ttf');
+final ttf = pw.Font.ttf(fontData);
+    pdf.addPage(
+      pw.Page(
+  theme: pw.ThemeData.withFont(
+    base: ttf,
+    bold: ttf,
+  ),
+  build: (context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
-              card(Icons.gavel, 'Aktivne nabavke', '0'),
-              card(Icons.business, 'Ponuđači', '0'),
-              card(Icons.description, 'Dokumenti', '0'),
-              card(Icons.auto_awesome, 'AI analiza', 'Spremna'),
-              card(Icons.picture_as_pdf, 'Izvještaji', '0'),
-              card(Icons.settings, 'Podešavanja', 'Aktivna'),
+              pw.Text(
+                'Javna nabavka',
+                style: pw.TextStyle(
+                  fontSize: 24,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+              pw.SizedBox(height: 20),
+              pw.TableHelper.fromTextArray(
+                data: [
+                  ['Polje', 'Vrijednost'],
+                  ['Naziv', nabavka['naziv'] ?? ''],
+                  ['Organizacija', nabavka['organizacija'] ?? ''],
+                  ['Predmet', nabavka['predmet'] ?? ''],
+                  ['Vrsta nabavke', nabavka['vrsta_nabavke'] ?? ''],
+                  [
+                    'Procijenjena vrijednost',
+                    nabavka['procijenjena_vrijednost'] ?? '',
+                  ],
+                  ['Kriterijum izbora', nabavka['kriterijum_izbora'] ?? ''],
+                  [
+                    'Član komisije 1',
+                    imeClanaKomisije(nabavka['clan_komisije_1']),
+                  ],
+                  [
+                    'Član komisije 2',
+                    imeClanaKomisije(nabavka['clan_komisije_2']),
+                  ],
+                  [
+                    'Član komisije 3',
+                    imeClanaKomisije(nabavka['clan_komisije_3']),
+                  ],
+                  ['Datum kreiranja', nabavka['created_at'] ?? ''],
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    await File(finalPutanja).writeAsBytes(await pdf.save());
+  } else {
+    final workbook = xlsio.Workbook();
+    final sheet = workbook.worksheets[0];
+
+    sheet.getRangeByName('A1').setText('Polje');
+    sheet.getRangeByName('B1').setText('Vrijednost');
+
+    final podaci = [
+      ['Naziv', nabavka['naziv'] ?? ''],
+      ['Organizacija', nabavka['organizacija'] ?? ''],
+      ['Predmet', nabavka['predmet'] ?? ''],
+      ['Vrsta nabavke', nabavka['vrsta_nabavke'] ?? ''],
+      ['Procijenjena vrijednost', nabavka['procijenjena_vrijednost'] ?? ''],
+      ['Kriterijum izbora', nabavka['kriterijum_izbora'] ?? ''],
+      ['Član komisije 1', imeClanaKomisije(nabavka['clan_komisije_1'])],
+      ['Član komisije 2', imeClanaKomisije(nabavka['clan_komisije_2'])],
+      ['Član komisije 3', imeClanaKomisije(nabavka['clan_komisije_3'])],
+      ['Datum kreiranja', nabavka['created_at'] ?? ''],
+    ];
+
+    for (int i = 0; i < podaci.length; i++) {
+      sheet.getRangeByIndex(i + 2, 1).setText(podaci[i][0].toString());
+      sheet.getRangeByIndex(i + 2, 2).setText(podaci[i][1].toString());
+    }
+final tabelaRange = sheet.getRangeByName('A1:B${podaci.length + 1}');
+tabelaRange.cellStyle.borders.all.lineStyle = xlsio.LineStyle.thin;
+
+sheet.getRangeByName('A1:B1').cellStyle.bold = true;
+sheet.autoFitColumn(1);
+sheet.autoFitColumn(2);
+    final bytes = workbook.saveAsStream();
+    workbook.dispose();
+
+    await File(finalPutanja).writeAsBytes(bytes);
+  }
+
+  if (!mounted) return;
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text('Dokument je snimljen: $finalPutanja')),
+  );
+}
+  Future<void> sacuvajJavnuNabavku() async {
+    if (nazivController.text.trim().isEmpty ||
+        predmetController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Unesi najmanje naziv i predmet nabavke.'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+
+      await Supabase.instance.client.from('javne_nabavke').insert({
+        'naziv': nazivController.text.trim(),
+        'organizacija': organizacija,
+        'predmet': predmetController.text.trim(),
+        'vrsta_nabavke': vrstaNabavke,
+        'procijenjena_vrijednost': vrijednostController.text.trim(),
+        'kriterijum_izbora': kriterijController.text.trim(),
+        'clan_komisije_1': clanKomisije1,
+        'clan_komisije_2': clanKomisije2,
+        'clan_komisije_3': clanKomisije3,
+        'kreirao_korisnik': user?.id,
+      });
+
+      if (!mounted) return;
+
+      nazivController.clear();
+      predmetController.clear();
+      vrijednostController.clear();
+      kriterijController.clear();
+
+      setState(() {
+        organizacija = 'Društvo CK';
+        vrstaNabavke = 'Roba';
+        clanKomisije1 = null;
+        clanKomisije2 = null;
+        clanKomisije3 = null;
+        selectedIndex = 0;
+      });
+
+      await ucitajJavneNabavke();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Javna nabavka je uspješno sačuvana u bazu.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Greška pri čuvanju nabavke: $e')),
+      );
+    }
+  }
+void prikaziNabavkuProzor(Map<String, dynamic> nabavka) {
+  showDialog(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: Text(nabavka['naziv'] ?? 'Javna nabavka'),
+        content: SizedBox(
+          width: 750,
+          child: SingleChildScrollView(
+            child: DataTable(
+              columns: const [
+                DataColumn(label: Text('Polje')),
+                DataColumn(label: Text('Vrijednost')),
+              ],
+              rows: [
+                DataRow(cells: [
+                  const DataCell(Text('Naziv')),
+                  DataCell(Text(nabavka['naziv'] ?? '')),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Organizacija')),
+                  DataCell(Text(nabavka['organizacija'] ?? '')),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Predmet')),
+                  DataCell(Text(nabavka['predmet'] ?? '')),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Vrsta nabavke')),
+                  DataCell(Text(nabavka['vrsta_nabavke'] ?? '')),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Procijenjena vrijednost')),
+                  DataCell(Text(nabavka['procijenjena_vrijednost'] ?? '')),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Kriterijum izbora')),
+                  DataCell(Text(nabavka['kriterijum_izbora'] ?? '')),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Član komisije 1')),
+                  DataCell(Text(imeClanaKomisije(nabavka['clan_komisije_1']))),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Član komisije 2')),
+                  DataCell(Text(imeClanaKomisije(nabavka['clan_komisije_2']))),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Član komisije 3')),
+                  DataCell(Text(imeClanaKomisije(nabavka['clan_komisije_3']))),
+                ]),
+                DataRow(cells: [
+                  const DataCell(Text('Datum kreiranja')),
+                  DataCell(Text(nabavka['created_at']?.toString() ?? '')),
+                ]),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          OutlinedButton.icon(
+            onPressed: () async {
+              await snimiNabavkuNaRacunar(nabavka);
+            },
+            icon: const Icon(Icons.save_alt),
+            label: const Text('Snimi na računar'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () async {
+              await printajNabavku(nabavka);
+            },
+            icon: const Icon(Icons.print),
+            label: const Text('Printaj'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+            },
+            icon: const Icon(Icons.check),
+            label: const Text('OK'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+Widget dashboardScreen() {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      title('Dashboard'),
+      const SizedBox(height: 8),
+      const Text(
+        'AI sistem za analizu ponuda i pripremu dokumentacije javnih nabavki.',
+        style: TextStyle(fontSize: 16, color: Colors.black54),
+      ),
+      const SizedBox(height: 25),
+      Expanded(
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: boxDecoration(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Aktivne nabavke',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF102A43),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Osvježi listu',
+                    onPressed: ucitajJavneNabavke,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 15),
+              Expanded(
+                child: javneNabavke.isEmpty
+                    ? const Text(
+                        'Još nema sačuvanih javnih nabavki.',
+                        style: TextStyle(color: Colors.black54),
+                      )
+                    : ListView.builder(
+                        itemCount: javneNabavke.length,
+                        itemBuilder: (context, index) {
+                          final nabavka = javneNabavke[index];
+
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: () {
+                                prikaziNabavkuProzor(nabavka);
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF4F7FA),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: Colors.grey.shade300,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.link,
+                                      color: Color(0xFF1F78B4),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        nabavka['naziv'] ?? '',
+                                        style: const TextStyle(
+                                          color: Color(0xFF1F78B4),
+                                          decoration: TextDecoration.underline,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                    const Icon(
+                                      Icons.open_in_new,
+                                      size: 18,
+                                      color: Colors.black45,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
             ],
           ),
         ),
-      ],
-    );
-  }
+      ),
+    ],
+  );
+}
 
   Future<void> ucitajNoviDokument() async {
     final result = await FilePicker.platform.pickFiles(
@@ -1039,13 +1476,7 @@ class _MainScreenState extends State<MainScreen> {
                 Row(
                   children: [
                     ElevatedButton.icon(
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Nabavka je privremeno sačuvana.'),
-                          ),
-                        );
-                      },
+                      onPressed: sacuvajJavnuNabavku,
                       icon: const Icon(Icons.save),
                       label: const Text('Sačuvaj nabavku'),
                     ),

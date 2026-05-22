@@ -37,6 +37,10 @@ dependencies:
   sqflite_common_ffi: ^2.3.4
   path: ^1.9.0
   supabase_flutter: ^2.8.0
+  pdf: ^3.11.1
+  printing: ^5.13.4
+  path_provider: ^2.1.5
+  syncfusion_flutter_xlsio: ^27.2.5
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -63,6 +67,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/fonts/DejaVuSans.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:
