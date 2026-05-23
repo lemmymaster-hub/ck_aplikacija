@@ -518,6 +518,11 @@ final ponudjacDatumControllers =
     List.generate(3, (_) => TextEditingController());
 
 final ponudjacValuta = ['BAM', 'BAM', 'BAM'];
+
+  String? odabranaJavnaNabavkaZaDokumente;
+  List<Map<String, dynamic>> ponudjaciZaDokumente = [];
+  final List<PlatformFile?> dokumentiPonudjaca = [null, null, null];
+
   List<PlatformFile> dokumenti = [];
   PlatformFile? dokumentZaPreview;
   bool prikaziPreview = false;
@@ -1821,6 +1826,442 @@ Widget javnaNabavkaDropdownZaPonudjace() {
     },
   );
 }
+
+  Future<void> ucitajPonudjaceZaDokumente(String javnaNabavkaId) async {
+    final response = await Supabase.instance.client
+        .from('ponude')
+        .select('''
+          id,
+          redni_broj,
+          datum_dostavljene_ponude,
+          valuta,
+          ponudjaci (
+            id,
+            naziv,
+            adresa,
+            id_broj,
+            bankovni_racun,
+            kontakt_osoba,
+            telefon,
+            email
+          )
+        ''')
+        .eq('javna_nabavka_id', javnaNabavkaId)
+        .order('redni_broj', ascending: true);
+
+    if (!mounted) return;
+
+    setState(() {
+      ponudjaciZaDokumente = List<Map<String, dynamic>>.from(response);
+      for (int i = 0; i < dokumentiPonudjaca.length; i++) {
+        dokumentiPonudjaca[i] = null;
+      }
+    });
+  }
+
+  Widget javnaNabavkaDropdownZaDokumente() {
+    return DropdownButtonFormField<String>(
+      value: odabranaJavnaNabavkaZaDokumente,
+      decoration: InputDecoration(
+        labelText: 'Izaberi javnu nabavku',
+        filled: true,
+        fillColor: Colors.white,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      items: javneNabavke.map((nabavka) {
+        return DropdownMenuItem<String>(
+          value: nabavka['id'].toString(),
+          child: Text(nabavka['naziv'] ?? 'Bez naziva'),
+        );
+      }).toList(),
+      onChanged: (value) async {
+        if (value == null) return;
+
+        setState(() {
+          odabranaJavnaNabavkaZaDokumente = value;
+          ponudjaciZaDokumente = [];
+          for (int i = 0; i < dokumentiPonudjaca.length; i++) {
+            dokumentiPonudjaca[i] = null;
+          }
+        });
+
+        await ucitajPonudjaceZaDokumente(value);
+      },
+    );
+  }
+
+  String ocistiNazivFajla(String naziv) {
+    return naziv.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+  }
+
+  String mimeTypeZaDokument(String ext) {
+    switch (ext.toLowerCase()) {
+      case 'pdf':
+        return 'application/pdf';
+      case 'doc':
+        return 'application/msword';
+      case 'docx':
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case 'xls':
+        return 'application/vnd.ms-excel';
+      case 'xlsx':
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  String tipDokumentaZaEkstenziju(String ext) {
+    switch (ext.toLowerCase()) {
+      case 'pdf':
+        return 'PDF dokument';
+      case 'doc':
+      case 'docx':
+        return 'Word dokument';
+      case 'xls':
+      case 'xlsx':
+        return 'Excel dokument';
+      case 'jpg':
+      case 'jpeg':
+      case 'png':
+        return 'Slika';
+      default:
+        return 'Dokument';
+    }
+  }
+
+  Future<void> ucitajDokumentZaPonudjaca(int index) async {
+    if (odabranaJavnaNabavkaZaDokumente == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Prvo izaberi javnu nabavku.')),
+      );
+      return;
+    }
+
+    if (index >= ponudjaciZaDokumente.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nema ponuđača za ovu kolonu.')),
+      );
+      return;
+    }
+
+    final ponuda = ponudjaciZaDokumente[index];
+    final ponudjacRaw = ponuda['ponudjaci'];
+    final ponudjac = ponudjacRaw is Map
+        ? Map<String, dynamic>.from(ponudjacRaw)
+        : <String, dynamic>{};
+
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: false,
+      type: FileType.custom,
+      allowedExtensions: [
+        'pdf',
+        'doc',
+        'docx',
+        'xls',
+        'xlsx',
+        'jpg',
+        'jpeg',
+        'png',
+      ],
+    );
+
+    if (result == null || result.files.isEmpty) return;
+
+    final doc = result.files.first;
+
+    if (doc.path == null || doc.path!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nije moguće učitati putanju dokumenta.')),
+      );
+      return;
+    }
+
+    setState(() {
+      dokumentiPonudjaca[index] = doc;
+    });
+
+    try {
+      final file = File(doc.path!);
+      final bytes = await file.readAsBytes();
+      final ext = ekstenzijaDokumenta(doc);
+      final safeName = ocistiNazivFajla(doc.name);
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      final storagePath =
+          '${odabranaJavnaNabavkaZaDokumente}/${ponuda['id']}/$timestamp-$safeName';
+
+      await Supabase.instance.client.storage
+          .from('dokumenti-ponuda')
+          .uploadBinary(
+            storagePath,
+            bytes,
+            fileOptions: FileOptions(
+              upsert: true,
+              contentType: mimeTypeZaDokument(ext),
+            ),
+          );
+
+      final publicUrl = Supabase.instance.client.storage
+          .from('dokumenti-ponuda')
+          .getPublicUrl(storagePath);
+
+      await Supabase.instance.client.from('dokumenti_ponuda').insert({
+        'javna_nabavka_id': odabranaJavnaNabavkaZaDokumente,
+        'ponuda_id': ponuda['id'],
+        'ponudjac_id': ponudjac['id'],
+        'naziv_fajla': doc.name,
+        'ekstenzija': ext,
+        'tip_dokumenta': tipDokumentaZaEkstenziju(ext),
+        'storage_path': storagePath,
+        'public_url': publicUrl,
+      });
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Dokument je sačuvan u bazu: ${doc.name}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Greška pri uploadu dokumenta: $e')),
+      );
+    }
+  }
+
+
+  String ekstenzijaDokumenta(PlatformFile doc) {
+    final fromExtension = doc.extension?.toLowerCase().trim();
+    if (fromExtension != null && fromExtension.isNotEmpty) {
+      return fromExtension;
+    }
+
+    final name = doc.name.toLowerCase();
+    final dotIndex = name.lastIndexOf('.');
+    if (dotIndex != -1 && dotIndex < name.length - 1) {
+      return name.substring(dotIndex + 1);
+    }
+
+    final path = doc.path?.toLowerCase() ?? '';
+    final pathDotIndex = path.lastIndexOf('.');
+    if (pathDotIndex != -1 && pathDotIndex < path.length - 1) {
+      return path.substring(pathDotIndex + 1);
+    }
+
+    return '';
+  }
+
+  bool jeSlikaDokument(String ext) {
+    return ext == 'jpg' ||
+        ext == 'jpeg' ||
+        ext == 'png' ||
+        ext == 'jfif' ||
+        ext == 'webp' ||
+        ext == 'bmp';
+  }
+
+  Widget slikaPreviewWidget(String path, {double? height}) {
+    final file = File(path);
+
+    if (!file.existsSync()) {
+      return const Center(
+        child: Text(
+          'Slika nije pronađena na disku.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.black54),
+        ),
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Image.file(
+        file,
+        fit: BoxFit.contain,
+        width: double.infinity,
+        height: height,
+        filterQuality: FilterQuality.medium,
+        errorBuilder: (context, error, stackTrace) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.broken_image, size: 54, color: Color(0xFF102A43)),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Slika se ne može prikazati u preview prozoru.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                  const SizedBox(height: 12),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      OpenFilex.open(path);
+                    },
+                    icon: const Icon(Icons.open_in_new, size: 18),
+                    label: const Text('Otvori sliku'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget maliPrikazPreviewa(PlatformFile? doc) {
+    if (doc == null) {
+      return const Center(
+        child: Text(
+          'Dokument nije učitan.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.black54),
+        ),
+      );
+    }
+
+    if (doc.path == null || doc.path!.isEmpty) {
+      return const Center(child: Text('Nije moguće prikazati dokument.'));
+    }
+
+    final ext = ekstenzijaDokumenta(doc);
+
+    if (jeSlikaDokument(ext)) {
+      return slikaPreviewWidget(doc.path!, height: double.infinity);
+    }
+
+    if (ext == 'pdf') {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SfPdfViewer.file(File(doc.path!)),
+      );
+    }
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.description, size: 54, color: Color(0xFF102A43)),
+            const SizedBox(height: 10),
+            Text(
+              doc.name,
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 2,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Dokument se može otvoriti u programu na računaru.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black54, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              onPressed: () {
+                OpenFilex.open(doc.path!);
+              },
+              icon: const Icon(Icons.open_in_new, size: 18),
+              label: const Text('Otvori'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget dokumentPonudjacaKolona(int index, Map<String, dynamic>? ponuda) {
+    if (ponuda == null) {
+      return Expanded(
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: boxDecoration(),
+          child: const Center(
+            child: Text(
+              'Nema ponuđača u ovoj koloni.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black54),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final ponudjacRaw = ponuda['ponudjaci'];
+    final ponudjac = ponudjacRaw is Map
+        ? Map<String, dynamic>.from(ponudjacRaw)
+        : <String, dynamic>{};
+
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: boxDecoration(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              ponudjac['naziv']?.toString() ?? 'Ponuđač bez naziva',
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF102A43),
+              ),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              onPressed: () {
+                ucitajDokumentZaPonudjaca(index);
+              },
+              icon: const Icon(Icons.upload_file),
+              label: const Text('Učitaj dokument'),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF4F7FA),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: maliPrikazPreviewa(dokumentiPonudjaca[index]),
+              ),
+            ),
+            if (dokumentiPonudjaca[index] != null) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    dokumentiPonudjaca[index] = null;
+                  });
+                },
+                icon: const Icon(Icons.close),
+                label: const Text('Ukloni dokument'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+
   Future<void> ucitajNoviDokument() async {
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: false,
@@ -1846,21 +2287,14 @@ Widget javnaNabavkaDropdownZaPonudjace() {
   }
 
   Widget prikazPreviewa(PlatformFile doc) {
-    final ext = doc.extension?.toLowerCase();
-
-    if (doc.path == null) {
+    if (doc.path == null || doc.path!.isEmpty) {
       return const Center(child: Text('Nije moguće prikazati dokument.'));
     }
 
-    if (ext == 'jpg' || ext == 'jpeg' || ext == 'png') {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Image.file(
-          File(doc.path!),
-          fit: BoxFit.contain,
-          width: double.infinity,
-        ),
-      );
+    final ext = ekstenzijaDokumenta(doc);
+
+    if (jeSlikaDokument(ext)) {
+      return slikaPreviewWidget(doc.path!);
     }
 
     if (ext == 'pdf') {
@@ -1882,15 +2316,12 @@ Widget javnaNabavkaDropdownZaPonudjace() {
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 10),
-
           const Text(
             'Word/Excel dokument se može otvoriti u programu na računaru.',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.black54),
           ),
-
           const SizedBox(height: 20),
-
           ElevatedButton.icon(
             onPressed: () {
               OpenFilex.open(doc.path!);
@@ -1904,6 +2335,13 @@ Widget javnaNabavkaDropdownZaPonudjace() {
   }
 
   Widget dokumentiScreen() {
+    final prikazaniPonudjaci = List<Map<String, dynamic>?>.generate(
+      3,
+      (index) => index < ponudjaciZaDokumente.length
+          ? ponudjaciZaDokumente[index]
+          : null,
+    );
+
     return Stack(
       children: [
         Padding(
@@ -1914,230 +2352,69 @@ Widget javnaNabavkaDropdownZaPonudjace() {
               title('Dokumenti'),
               const SizedBox(height: 8),
               const Text(
-                'Učitavanje, pregled i potvrda dokumenata za postupak javne nabavke.',
+                'Učitavanje i pregled dokumenata po ponuđačima za odabranu javnu nabavku.',
                 style: TextStyle(fontSize: 16, color: Colors.black54),
               ),
+              const SizedBox(height: 20),
+
+              javnaNabavkaDropdownZaDokumente(),
+
               const SizedBox(height: 25),
 
               Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    /// LIJEVA STRANA
-                    Expanded(
-                      flex: 2,
-                      child: Container(
-                        padding: const EdgeInsets.all(20),
+                child: odabranaJavnaNabavkaZaDokumente == null
+                    ? Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(24),
                         decoration: boxDecoration(),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            ElevatedButton.icon(
-                              onPressed: ucitajNoviDokument,
-                              icon: const Icon(Icons.upload_file),
-                              label: const Text('Učitaj novi dokument'),
-                            ),
-
-                            const SizedBox(height: 25),
-
-                            const Text(
-                              'Potvrđeni dokumenti',
-                              style: TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF102A43),
-                              ),
-                            ),
-
-                            const SizedBox(height: 12),
-
-                            Expanded(
-                              child: dokumenti.isEmpty
-                                  ? const Text(
-                                      'Još nema potvrđenih dokumenata.',
-                                      style: TextStyle(color: Colors.black54),
-                                    )
-                                  : ListView.builder(
-                                      itemCount: dokumenti.length,
-                                      itemBuilder: (context, index) {
-                                        final doc = dokumenti[index];
-
-                                        return Padding(
-                                          padding: const EdgeInsets.only(
-                                            bottom: 10,
-                                          ),
-                                          child: InkWell(
-                                            borderRadius: BorderRadius.circular(
-                                              10,
-                                            ),
-                                            onTap: () {
-                                              setState(() {
-                                                dokumentZaPreview = doc;
-                                                prikaziPreview = true;
-                                              });
-                                            },
-                                            child: Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 12,
-                                                    vertical: 10,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFFF4F7FA),
-                                                borderRadius:
-                                                    BorderRadius.circular(10),
-                                                border: Border.all(
-                                                  color: Colors.grey.shade300,
-                                                ),
-                                              ),
-                                              child: Row(
-                                                children: [
-                                                  const Icon(
-                                                    Icons.link,
-                                                    size: 18,
-                                                    color: Color(0xFF1F78B4),
-                                                  ),
-                                                  const SizedBox(width: 8),
-                                                  Expanded(
-                                                    child: Text(
-                                                      doc.name,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: const TextStyle(
-                                                        color: Color(
-                                                          0xFF1F78B4,
-                                                        ),
-                                                        decoration:
-                                                            TextDecoration
-                                                                .underline,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                            ),
-                          ],
+                        child: const Center(
+                          child: Text(
+                            'Prvo izaberi javnu nabavku da bi se prikazali ponuđači.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 16, color: Colors.black54),
+                          ),
                         ),
-                      ),
-                    ),
-
-                    const SizedBox(width: 30),
-
-                    /// DESNA STRANA - STVARNI PREVIEW
-                    Expanded(
-                      flex: 3,
-                      child: prikaziPreview && dokumentZaPreview != null
-                          ? Column(
-                              children: [
-                                Expanded(
-                                  child: Container(
-                                    width: double.infinity,
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(18),
-                                      border: Border.all(
-                                        color: Colors.grey.shade300,
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withOpacity(0.06),
-                                          blurRadius: 14,
-                                          offset: const Offset(0, 6),
-                                        ),
-                                      ],
-                                    ),
-                                    child: prikazPreviewa(dokumentZaPreview!),
-                                  ),
-                                ),
-
-                                const SizedBox(height: 15),
-
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.end,
-                                  children: [
-                                    OutlinedButton.icon(
-                                      onPressed: () {
-                                        setState(() {
-                                          prikaziPreview = false;
-                                          dokumentZaPreview = null;
-                                        });
-                                      },
-                                      icon: const Icon(Icons.close),
-                                      label: const Text('Zatvori preview'),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    ElevatedButton.icon(
-                                      onPressed: () {
-                                        setState(() {
-                                          if (dokumentZaPreview != null &&
-                                              !dokumenti.any(
-                                                (doc) =>
-                                                    doc.name ==
-                                                        dokumentZaPreview!
-                                                            .name &&
-                                                    doc.path ==
-                                                        dokumentZaPreview!.path,
-                                              )) {
-                                            dokumenti.add(dokumentZaPreview!);
-                                          }
-
-                                          prikaziPreview = false;
-                                          dokumentZaPreview = null;
-                                        });
-                                      },
-                                      icon: const Icon(Icons.check),
-                                      label: const Text('Potvrdi'),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            )
-                          : Container(
-                              width: double.infinity,
-                              height: double.infinity,
-                              padding: const EdgeInsets.all(24),
-                              decoration: boxDecoration(),
-                              child: const Center(
-                                child: Text(
-                                  'Učitaj dokument da bi se ovdje prikazao preview.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: Colors.black54,
-                                  ),
+                      )
+                    : ponudjaciZaDokumente.isEmpty
+                        ? Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(24),
+                            decoration: boxDecoration(),
+                            child: const Center(
+                              child: Text(
+                                'Za ovu javnu nabavku još nema povezanih ponuđača.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.black54,
                                 ),
                               ),
                             ),
-                    ),
-                  ],
-                ),
+                          )
+                        : Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              dokumentPonudjacaKolona(0, prikazaniPonudjaci[0]),
+                              const SizedBox(width: 16),
+                              dokumentPonudjacaKolona(1, prikazaniPonudjaci[1]),
+                              const SizedBox(width: 16),
+                              dokumentPonudjacaKolona(2, prikazaniPonudjaci[2]),
+                            ],
+                          ),
               ),
             ],
           ),
         ),
 
-        /// FIKSNO DUGME DOLE DESNO
         Positioned(
           right: 0,
           bottom: 0,
           child: ElevatedButton.icon(
-            onPressed: dokumenti.isEmpty
-                ? null
-                : () {
-                    setState(() {
-                      prikaziPreview = false;
-                      dokumentZaPreview = null;
-                      selectedIndex = 0;
-                    });
-                  },
+            onPressed: () {
+              setState(() {
+                selectedIndex = 0;
+              });
+            },
             icon: const Icon(Icons.done_all),
             label: const Text('Gotovo'),
           ),
