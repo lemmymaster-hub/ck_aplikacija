@@ -284,7 +284,7 @@ class _LoginScreenState extends State<LoginScreen> {
               borderRadius: BorderRadius.circular(22),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.10),
+                  color: Colors.black.withValues(alpha: 0.10),
                   blurRadius: 25,
                   offset: const Offset(0, 12),
                 ),
@@ -763,6 +763,8 @@ class _MainScreenState extends State<MainScreen> {
                 ? ponudjaciScreen()
                 : selectedIndex == 3
                 ? dokumentiScreen()
+                : selectedIndex == 4
+                ? aiAnalizaScreen()
                 : dashboardScreen(),
           ),
         ],
@@ -1716,6 +1718,110 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  bool aiAnalizaLoading = false;
+  String? odabranaJavnaNabavkaZaAi;
+  Map<String, dynamic>? rezultatAiAnalize;
+  Future<void> pokreniAiAnalizu() async {
+    if (odabranaJavnaNabavkaZaAi == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Prvo izaberi javnu nabavku.')),
+      );
+      return;
+    }
+
+    setState(() => aiAnalizaLoading = true);
+
+    try {
+      final response = await Supabase.instance.client.functions.invoke(
+        'ai-kap-analiza',
+        body: {'javna_nabavka_id': odabranaJavnaNabavkaZaAi},
+      );
+
+      setState(() {
+        rezultatAiAnalize = Map<String, dynamic>.from(response.data);
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            response.data['message']?.toString() ?? 'AI backend je odgovorio.',
+          ),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Greška AI analize: $e')));
+    } finally {
+      if (mounted) {
+        setState(() => aiAnalizaLoading = false);
+      }
+    }
+  }
+
+  Widget aiAnalizaScreen() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        title('AI analiza ponuda'),
+        const SizedBox(height: 8),
+        const Text(
+          'AI čita PDF ponude ponuđača i priprema KAP analizu.',
+          style: TextStyle(fontSize: 16, color: Colors.black54),
+        ),
+        const SizedBox(height: 20),
+
+        DropdownButtonFormField<String>(
+          initialValue: odabranaJavnaNabavkaZaAi,
+          decoration: InputDecoration(
+            labelText: 'Izaberi javnu nabavku',
+            filled: true,
+            fillColor: Colors.white,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+          items: javneNabavke.map((nabavka) {
+            return DropdownMenuItem<String>(
+              value: nabavka['id'].toString(),
+              child: Text(nabavka['naziv'] ?? 'Bez naziva'),
+            );
+          }).toList(),
+          onChanged: (value) {
+            setState(() {
+              odabranaJavnaNabavkaZaAi = value;
+              rezultatAiAnalize = null;
+            });
+          },
+        ),
+
+        const SizedBox(height: 20),
+
+        ElevatedButton.icon(
+          onPressed: aiAnalizaLoading ? null : pokreniAiAnalizu,
+          icon: const Icon(Icons.auto_awesome),
+          label: Text(
+            aiAnalizaLoading ? 'AI analizira...' : 'Pokreni AI analizu',
+          ),
+        ),
+        const SizedBox(height: 20),
+
+        if (rezultatAiAnalize != null)
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: boxDecoration(),
+              child: SingleChildScrollView(
+                child: Text(
+                  rezultatAiAnalize.toString(),
+                  style: const TextStyle(fontFamily: 'Consolas'),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
   Widget dashboardScreen() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1958,7 +2064,7 @@ class _MainScreenState extends State<MainScreen> {
 
   Widget javnaNabavkaDropdownZaPonudjace() {
     return DropdownButtonFormField<String>(
-      value: odabranaJavnaNabavkaZaPonudjace,
+      initialValue: odabranaJavnaNabavkaZaPonudjace,
       decoration: InputDecoration(
         labelText: 'Izaberi javnu nabavku',
         filled: true,
@@ -2013,7 +2119,7 @@ class _MainScreenState extends State<MainScreen> {
 
   Widget javnaNabavkaDropdownZaDokumente() {
     return DropdownButtonFormField<String>(
-      value: odabranaJavnaNabavkaZaDokumente,
+      initialValue: odabranaJavnaNabavkaZaDokumente,
       decoration: InputDecoration(
         labelText: 'Izaberi javnu nabavku',
         filled: true,
@@ -2146,7 +2252,7 @@ class _MainScreenState extends State<MainScreen> {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
 
       final storagePath =
-          '${odabranaJavnaNabavkaZaDokumente}/${ponuda['id']}/$timestamp-$safeName';
+          '$odabranaJavnaNabavkaZaDokumente/${ponuda['id']}/$timestamp-$safeName';
 
       await Supabase.instance.client.storage
           .from('dokumenti-ponuda')
@@ -2598,7 +2704,7 @@ class _MainScreenState extends State<MainScreen> {
             child: ListView(
               children: [
                 DropdownButtonFormField<String>(
-                  value: program,
+                  initialValue: program,
                   decoration: InputDecoration(
                     labelText: 'Izaberi program',
                     filled: true,
@@ -2953,7 +3059,7 @@ class _MainScreenState extends State<MainScreen> {
               const SizedBox(height: 12),
 
               DropdownButtonFormField<String>(
-                value: ponudjacValuta[index],
+                initialValue: ponudjacValuta[index],
                 decoration: InputDecoration(
                   labelText: 'Valuta ponude',
                   filled: true,
@@ -3024,7 +3130,7 @@ class _MainScreenState extends State<MainScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: DropdownButtonFormField<String>(
-        value: vrstaNabavke,
+        initialValue: vrstaNabavke,
         decoration: InputDecoration(
           labelText: 'Vrsta nabavke',
           filled: true,
@@ -3049,7 +3155,7 @@ class _MainScreenState extends State<MainScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: DropdownButtonFormField<String>(
-        value: organizacija,
+        initialValue: organizacija,
         decoration: InputDecoration(
           labelText: 'Organizacija',
           filled: true,
@@ -3086,7 +3192,7 @@ class _MainScreenState extends State<MainScreen> {
 
     return Expanded(
       child: DropdownButtonFormField<String>(
-        value: value,
+        initialValue: value,
         decoration: InputDecoration(
           labelText: label,
           filled: true,
@@ -3146,7 +3252,7 @@ class _MainScreenState extends State<MainScreen> {
       borderRadius: BorderRadius.circular(18),
       boxShadow: [
         BoxShadow(
-          color: Colors.black.withOpacity(0.08),
+          color: Colors.black.withValues(alpha: 0.08),
           blurRadius: 18,
           offset: const Offset(0, 8),
         ),
