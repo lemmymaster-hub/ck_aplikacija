@@ -136,14 +136,38 @@ ${skraceniTekst}
         }
       );
 console.log("NVIDIA STATUS:", nvidiaResponse.status);
-    const nvidiaData = await nvidiaResponse.json();
+   const nvidiaData = await nvidiaResponse.json();
 console.log(JSON.stringify(nvidiaData));
+
+let aiOdgovor = nvidiaData.choices?.[0]?.message?.content ?? "";
+
+aiOdgovor = aiOdgovor
+  .replace(/```json/g, "")
+  .replace(/```/g, "")
+  .trim();
+
+let aiJson = null;
+
+try {
+  aiJson = JSON.parse(aiOdgovor);
+} catch (_) {
+  aiJson = {
+    raw_response: aiOdgovor,
+    greska: "AI odgovor nije validan JSON.",
+  };
+}
 
 analizaRezultati.push({
   dokument: dokument.naziv_fajla,
   broj_karaktera_pdf_teksta: tekstDokumenta.length,
-  ai_odgovor:
-    nvidiaData.choices?.[0]?.message?.content ?? nvidiaData,
+  ai_json: aiJson,
+});
+await supabase.from("ai_analize").insert({
+  javna_nabavka_id: javnaNabavkaId,
+  dokument_id: dokument.id,
+  naziv_fajla: dokument.naziv_fajla,
+  ai_json: aiJson,
+  status: "uspjesno",
 });
     }
 
