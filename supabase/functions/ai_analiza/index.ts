@@ -70,14 +70,14 @@ try {
   continue;
 }
 
-      if (tekstDokumenta.trim().length < 30) {
-        analizaRezultati.push({
-          dokument: dokument.naziv_fajla,
-          greska: "PDF nema čitljiv tekst. Vjerovatno je skeniran dokument i treba OCR.",
-        });
-        continue;
-      }
+     if (tekstDokumenta.trim().length < 30) {
+  analizaRezultati.push({
+    dokument: dokument.naziv_fajla,
+    greska: "PDF nema čitljiv tekst. Vjerovatno je skeniran dokument i treba OCR.",
+  });
 
+  continue;
+}
       const skraceniTekst = tekstDokumenta.substring(0, 18000);
 
       const prompt = `
