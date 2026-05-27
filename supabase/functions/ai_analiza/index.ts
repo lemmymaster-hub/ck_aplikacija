@@ -41,6 +41,8 @@ if (downloadError || !fileData) {
 }
 
 const arrayBuffer = await fileData.arrayBuffer();
+console.log("DOKUMENT:", dokument.naziv_fajla);
+console.log("OCR TEXT LENGTH:", dokument.ocr_text?.length ?? 0);
 
 const prviBajtovi = new TextDecoder()
   .decode(new Uint8Array(arrayBuffer.slice(0, 5)));
@@ -71,25 +73,81 @@ try {
 }
 
      if (tekstDokumenta.trim().length < 30) {
-  analizaRezultati.push({
-    dokument: dokument.naziv_fajla,
-    greska: "PDF nema čitljiv tekst. Vjerovatno je skeniran dokument i treba OCR.",
-  });
 
-  continue;
+  try {
+
+    const formData = new FormData();
+
+    formData.append(
+      "file",
+      new Blob([arrayBuffer], { type: "application/pdf" }),
+      dokument.naziv_fajla
+    );
+
+    formData.append("apikey", Deno.env.get("OCR_SPACE_API_KEY") || "");
+    formData.append("language", "eng");
+    formData.append("isOverlayRequired", "false");
+    formData.append("OCREngine", "2");
+
+    const ocrResponse = await fetch(
+      "https://api.ocr.space/parse/image",
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+
+    const ocrData = await ocrResponse.json();
+
+    const parsedText =
+      ocrData?.ParsedResults?.[0]?.ParsedText || "";
+
+    tekstDokumenta = parsedText;
+
+  } catch (ocrError) {
+
+    analizaRezultati.push({
+      dokument: dokument.naziv_fajla,
+      greska: "OCR.Space OCR nije uspio.",
+      detalj: String(ocrError),
+    });
+
+    continue;
+  }
 }
-      const skraceniTekst = tekstDokumenta.substring(0, 18000);
+
+if (tekstDokumenta.trim().length < 30) {
+
+  if (dokument.ocr_text && dokument.ocr_text.trim().length > 30) {
+
+    tekstDokumenta = dokument.ocr_text;
+
+  } else {
+
+    analizaRezultati.push({
+      dokument: dokument.naziv_fajla,
+      greska: "PDF nema čitljiv tekst i nije pronađen lokalni OCR tekst.",
+    });
+
+    continue;
+  }
+}
+      const skraceniTekst = tekstDokumenta.substring(0, 6000);
 
       const prompt = `
-Analiziraj stvarni tekst ponude ponuđača iz javne nabavke.
+Analiziraj OCR tekst ponude iz javne nabavke.
 
-Vrati ISKLJUČIVO JSON, bez dodatnog teksta.
+VRATI ISKLJUČIVO VALIDAN JSON.
+NE PISATI objašnjenja.
+NE PISATI markdown.
+NE PISATI \`\`\`.
+NE PISATI dodatni tekst.
 
 JSON format:
+
 {
   "naziv_ponudjaca": "",
   "ukupna_cijena": "",
-  "valuta": "",
   "pdv": "",
   "rok_isporuke": "",
   "garancija": "",
@@ -102,11 +160,11 @@ JSON format:
       "ukupno": ""
     }
   ],
-  "preporuka": "",
-  "napomena": ""
+  "napomena": "",
+  "preporuka": ""
 }
 
-Tekst dokumenta:
+OCR tekst:
 ${skraceniTekst}
 `;
 

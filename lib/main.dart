@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
+import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 import 'package:open_filex/open_filex.dart';
@@ -10,6 +11,7 @@ import 'package:syncfusion_flutter_xlsio/xlsio.dart' as xlsio;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
+import 'package:http/http.dart' as http;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -24,7 +26,6 @@ Future<void> main() async {
 
 class JavneNabavkeApp extends StatelessWidget {
   const JavneNabavkeApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -542,6 +543,7 @@ class _MainScreenState extends State<MainScreen> {
   String? odabranaJavnaNabavkaZaDokumente;
   List<Map<String, dynamic>> ponudjaciZaDokumente = [];
   final List<PlatformFile?> dokumentiPonudjaca = [null, null, null];
+  final List<Map<String, dynamic>?> dokumentiPonudjacaInfo = [null, null, null];
 
   List<PlatformFile> dokumenti = [];
   PlatformFile? dokumentZaPreview;
@@ -1721,7 +1723,59 @@ class _MainScreenState extends State<MainScreen> {
   bool aiAnalizaLoading = false;
   String? odabranaJavnaNabavkaZaAi;
   Map<String, dynamic>? rezultatAiAnalize;
-  Future<void> pokreniAiAnalizu() async {
+  List<Map<String, dynamic>> get aiAnalizeLista {
+    final analiza = rezultatAiAnalize?['analiza'];
+
+    if (analiza is List) {
+      return analiza
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+
+    return [];
+  }
+
+  Future<bool> ucitajPostojeceAiAnalize() async {
+    if (odabranaJavnaNabavkaZaAi == null) return false;
+
+    final response = await Supabase.instance.client
+        .from('ai_analize')
+        .select()
+        .eq('javna_nabavka_id', odabranaJavnaNabavkaZaAi!)
+        .order('created_at', ascending: false);
+
+    final rows = List<Map<String, dynamic>>.from(response);
+
+    if (rows.isEmpty) return false;
+
+    final analiza = rows.map((row) {
+      final greska = row['greska'];
+      final aiJson = row['ai_json'];
+
+      return <String, dynamic>{
+        'dokument': row['naziv_fajla']?.toString() ?? 'Dokument bez naziva',
+        'ai_json': aiJson,
+        if (greska != null && greska.toString().trim().isNotEmpty)
+          'greska': greska.toString(),
+      };
+    }).toList();
+
+    if (!mounted) return true;
+
+    setState(() {
+      rezultatAiAnalize = {
+        'success': true,
+        'broj_pdf_dokumenata': analiza.length,
+        'analiza': analiza,
+        'iz_baze': true,
+      };
+    });
+
+    return true;
+  }
+
+  Future<void> pokreniAiAnalizu({bool forsirajNovuAnalizu = false}) async {
     if (odabranaJavnaNabavkaZaAi == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Prvo izaberi javnu nabavku.')),
@@ -1732,10 +1786,28 @@ class _MainScreenState extends State<MainScreen> {
     setState(() => aiAnalizaLoading = true);
 
     try {
+      if (!forsirajNovuAnalizu) {
+        final imaPostojecaAnaliza = await ucitajPostojeceAiAnalize();
+
+        if (imaPostojecaAnaliza) {
+          if (!mounted) return;
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Prikazana je već sačuvana AI analiza iz baze.'),
+            ),
+          );
+
+          return;
+        }
+      }
+
       final response = await Supabase.instance.client.functions.invoke(
-        'ai-kap-analiza',
+        'ai_analiza',
         body: {'javna_nabavka_id': odabranaJavnaNabavkaZaAi},
       );
+
+      if (!mounted) return;
 
       setState(() {
         rezultatAiAnalize = Map<String, dynamic>.from(response.data);
@@ -1749,6 +1821,8 @@ class _MainScreenState extends State<MainScreen> {
         ),
       );
     } catch (e) {
+      if (!mounted) return;
+
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Greška AI analize: $e')));
@@ -1757,6 +1831,43 @@ class _MainScreenState extends State<MainScreen> {
         setState(() => aiAnalizaLoading = false);
       }
     }
+  }
+
+  Widget _aiInfoChip(String label, dynamic value) {
+    final text = value?.toString().trim().isNotEmpty == true
+        ? value.toString()
+        : 'nije navedeno';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE3F2FD),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFBBDEFB)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.black54,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            text,
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF102A43),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget aiAnalizaScreen() {
@@ -1795,14 +1906,47 @@ class _MainScreenState extends State<MainScreen> {
 
         const SizedBox(height: 20),
 
-        ElevatedButton.icon(
-          onPressed: aiAnalizaLoading ? null : pokreniAiAnalizu,
-          icon: const Icon(Icons.auto_awesome),
-          label: Text(
-            aiAnalizaLoading ? 'AI analizira...' : 'Pokreni AI analizu',
-          ),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            ElevatedButton.icon(
+              onPressed: aiAnalizaLoading
+                  ? null
+                  : () => pokreniAiAnalizu(forsirajNovuAnalizu: false),
+              icon: const Icon(Icons.visibility),
+              label: Text(
+                aiAnalizaLoading ? 'Učitavam...' : 'Prikaži AI analizu',
+              ),
+            ),
+            OutlinedButton.icon(
+              onPressed: aiAnalizaLoading
+                  ? null
+                  : () => pokreniAiAnalizu(forsirajNovuAnalizu: true),
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text('Pokreni novu AI analizu'),
+            ),
+          ],
         ),
         const SizedBox(height: 20),
+
+        if (rezultatAiAnalize != null &&
+            rezultatAiAnalize?['iz_baze'] == true) ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.green.shade200),
+            ),
+            child: const Text(
+              'Prikazani su već sačuvani rezultati iz baze. Za novu obradu klikni „Pokreni novu AI analizu”.',
+              style: TextStyle(color: Color(0xFF1B5E20)),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
 
         if (rezultatAiAnalize != null)
           Expanded(
@@ -1810,12 +1954,169 @@ class _MainScreenState extends State<MainScreen> {
               width: double.infinity,
               padding: const EdgeInsets.all(20),
               decoration: boxDecoration(),
-              child: SingleChildScrollView(
-                child: Text(
-                  rezultatAiAnalize.toString(),
-                  style: const TextStyle(fontFamily: 'Consolas'),
-                ),
-              ),
+              child: aiAnalizeLista.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'Nema rezultata AI analize za prikaz.',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: aiAnalizeLista.length,
+                      itemBuilder: (context, index) {
+                        final dokument = aiAnalizeLista[index];
+                        final rawAiJson = dokument['ai_json'];
+                        final aiJson = rawAiJson is Map
+                            ? Map<String, dynamic>.from(rawAiJson)
+                            : null;
+                        final rawStavke = aiJson?['stavke'];
+                        final stavke = rawStavke is List ? rawStavke : [];
+
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          elevation: 1,
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.description,
+                                      color: Color(0xFF1F78B4),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        dokument['dokument']?.toString() ??
+                                            'Dokument bez naziva',
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFF102A43),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                if (dokument['greska'] != null)
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red.shade50,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: Colors.red.shade200,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      'Greška: ${dokument['greska']}',
+                                      style: TextStyle(
+                                        color: Colors.red.shade800,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                if (aiJson != null) ...[
+                                  Wrap(
+                                    spacing: 12,
+                                    runSpacing: 12,
+                                    children: [
+                                      _aiInfoChip(
+                                        'Ponuđač',
+                                        aiJson['naziv_ponudjaca'],
+                                      ),
+                                      _aiInfoChip(
+                                        'Ukupna cijena',
+                                        aiJson['ukupna_cijena'],
+                                      ),
+                                      _aiInfoChip('PDV', aiJson['pdv']),
+                                      _aiInfoChip(
+                                        'Rok isporuke',
+                                        aiJson['rok_isporuke'],
+                                      ),
+                                      _aiInfoChip(
+                                        'Garancija',
+                                        aiJson['garancija'],
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  if ((aiJson['opis_ponude'] ?? '')
+                                      .toString()
+                                      .trim()
+                                      .isNotEmpty)
+                                    Text(
+                                      'Opis: ${aiJson['opis_ponude']}',
+                                      style: const TextStyle(
+                                        color: Colors.black87,
+                                      ),
+                                    ),
+                                  const SizedBox(height: 14),
+                                  const Text(
+                                    'Stavke:',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF102A43),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  if (stavke.isEmpty)
+                                    const Text(
+                                      'Nema pronađenih stavki.',
+                                      style: TextStyle(color: Colors.black54),
+                                    )
+                                  else
+                                    ...stavke.map((stavkaRaw) {
+                                      final stavka = stavkaRaw is Map
+                                          ? Map<String, dynamic>.from(stavkaRaw)
+                                          : <String, dynamic>{};
+
+                                      return Container(
+                                        width: double.infinity,
+                                        margin: const EdgeInsets.only(
+                                          bottom: 6,
+                                        ),
+                                        padding: const EdgeInsets.all(10),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFF4F7FA),
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          border: Border.all(
+                                            color: Colors.grey.shade300,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          '• ${stavka['naziv_stavke'] ?? 'nije navedeno'} | '
+                                          '${stavka['kolicina'] ?? 'nije navedeno'} | '
+                                          '${stavka['jedinicna_cijena'] ?? 'nije navedeno'} | '
+                                          '${stavka['ukupno'] ?? 'nije navedeno'}',
+                                        ),
+                                      );
+                                    }),
+                                  if ((aiJson['napomena'] ?? '')
+                                      .toString()
+                                      .trim()
+                                      .isNotEmpty) ...[
+                                    const SizedBox(height: 10),
+                                    Text(
+                                      'Napomena: ${aiJson['napomena']}',
+                                      style: const TextStyle(
+                                        color: Colors.black54,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
             ),
           ),
       ],
@@ -2113,6 +2414,7 @@ class _MainScreenState extends State<MainScreen> {
       ponudjaciZaDokumente = List<Map<String, dynamic>>.from(response);
       for (int i = 0; i < dokumentiPonudjaca.length; i++) {
         dokumentiPonudjaca[i] = null;
+        dokumentiPonudjacaInfo[i] = null;
       }
     });
   }
@@ -2242,6 +2544,7 @@ class _MainScreenState extends State<MainScreen> {
 
     setState(() {
       dokumentiPonudjaca[index] = doc;
+      dokumentiPonudjacaInfo[index] = null;
     });
 
     try {
@@ -2269,18 +2572,27 @@ class _MainScreenState extends State<MainScreen> {
           .from('dokumenti-ponuda')
           .getPublicUrl(storagePath);
 
-      await Supabase.instance.client.from('dokumenti_ponuda').insert({
-        'javna_nabavka_id': odabranaJavnaNabavkaZaDokumente,
-        'ponuda_id': ponuda['id'],
-        'ponudjac_id': ponudjac['id'],
-        'naziv_fajla': doc.name,
-        'ekstenzija': ext,
-        'tip_dokumenta': tipDokumentaZaEkstenziju(ext),
-        'storage_path': storagePath,
-        'public_url': publicUrl,
-      });
+      final dokumentRow = await Supabase.instance.client
+          .from('dokumenti_ponuda')
+          .insert({
+            'javna_nabavka_id': odabranaJavnaNabavkaZaDokumente,
+            'ponuda_id': ponuda['id'],
+            'ponudjac_id': ponudjac['id'],
+            'naziv_fajla': doc.name,
+            'ekstenzija': ext,
+            'tip_dokumenta': tipDokumentaZaEkstenziju(ext),
+            'storage_path': storagePath,
+            'public_url': publicUrl,
+            'ocr_status': 'nije_pokrenut',
+          })
+          .select()
+          .single();
 
       if (!mounted) return;
+
+      setState(() {
+        dokumentiPonudjacaInfo[index] = Map<String, dynamic>.from(dokumentRow);
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Dokument je sačuvan u bazu: ${doc.name}')),
@@ -2290,6 +2602,125 @@ class _MainScreenState extends State<MainScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Greška pri uploadu dokumenta: $e')),
+      );
+    }
+  }
+
+
+  Future<void> pokreniLokalniOcrZaPonudjaca(int index) async {
+    final doc = dokumentiPonudjaca[index];
+    final dokumentInfo = dokumentiPonudjacaInfo[index];
+
+    if (doc == null || doc.path == null || doc.path!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Prvo učitaj PDF dokument.')),
+      );
+      return;
+    }
+
+    if (dokumentInfo == null || dokumentInfo['id'] == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Dokument još nije sačuvan u bazu. Učitaj ga ponovo.'),
+        ),
+      );
+      return;
+    }
+
+    final ext = ekstenzijaDokumenta(doc);
+    if (ext != 'pdf') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Lokalni OCR trenutno radi samo za PDF.')),
+      );
+      return;
+    }
+
+    final dokumentId = dokumentInfo['id'].toString();
+
+    try {
+      setState(() {
+        dokumentiPonudjacaInfo[index] = {
+          ...dokumentInfo,
+          'ocr_status': 'u_toku',
+        };
+      });
+
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('http://127.0.0.1:8000/ocr'),
+      );
+
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'file',
+          doc.path!,
+          filename: doc.name,
+        ),
+      );
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode != 200) {
+        throw Exception('OCR server greška: ${response.body}');
+      }
+
+      final Map<String, dynamic> data = jsonDecode(response.body);
+      final ocrText = data['text']?.toString() ?? '';
+      final ocrPages = data['pages'] is int
+          ? data['pages'] as int
+          : int.tryParse(data['pages']?.toString() ?? '');
+
+      if (ocrText.trim().length < 20) {
+        throw Exception('OCR nije pronašao dovoljno čitljivog teksta.');
+      }
+
+      await Supabase.instance.client
+          .from('dokumenti_ponuda')
+          .update({
+            'ocr_text': ocrText,
+            'ocr_status': 'uspjesno',
+            'ocr_pages': ocrPages,
+          })
+          .eq('id', dokumentId);
+
+      if (!mounted) return;
+
+      setState(() {
+        dokumentiPonudjacaInfo[index] = {
+          ...dokumentInfo,
+          'ocr_status': 'uspjesno',
+          'ocr_text': ocrText,
+          'ocr_pages': ocrPages,
+        };
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'OCR završen: ${ocrPages ?? 0} stranica, ${ocrText.length} karaktera.',
+          ),
+        ),
+      );
+    } catch (e) {
+      await Supabase.instance.client
+          .from('dokumenti_ponuda')
+          .update({
+            'ocr_status': 'greska',
+          })
+          .eq('id', dokumentId);
+
+      if (!mounted) return;
+
+      setState(() {
+        dokumentiPonudjacaInfo[index] = {
+          ...dokumentInfo,
+          'ocr_status': 'greska',
+        };
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Greška lokalnog OCR-a: $e')),
       );
     }
   }
@@ -2506,10 +2937,44 @@ class _MainScreenState extends State<MainScreen> {
             ),
             if (dokumentiPonudjaca[index] != null) ...[
               const SizedBox(height: 10),
+              if (ekstenzijaDokumenta(dokumentiPonudjaca[index]!) == 'pdf')
+                ElevatedButton.icon(
+                  onPressed:
+                      dokumentiPonudjacaInfo[index]?['ocr_status'] == 'u_toku'
+                      ? null
+                      : () => pokreniLokalniOcrZaPonudjaca(index),
+                  icon: const Icon(Icons.document_scanner),
+                  label: Text(
+                    dokumentiPonudjacaInfo[index]?['ocr_status'] == 'u_toku'
+                        ? 'OCR u toku...'
+                        : 'Pokreni lokalni OCR',
+                  ),
+                ),
+              if (dokumentiPonudjacaInfo[index]?['ocr_status'] != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'OCR status: ${dokumentiPonudjacaInfo[index]?['ocr_status']}',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color:
+                        dokumentiPonudjacaInfo[index]?['ocr_status'] ==
+                            'uspjesno'
+                        ? Colors.green
+                        : dokumentiPonudjacaInfo[index]?['ocr_status'] ==
+                              'greska'
+                        ? Colors.red
+                        : Colors.black54,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 10),
               OutlinedButton.icon(
                 onPressed: () {
                   setState(() {
                     dokumentiPonudjaca[index] = null;
+                    dokumentiPonudjacaInfo[index] = null;
                   });
                 },
                 icon: const Icon(Icons.close),
