@@ -2606,8 +2606,8 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-
   Future<void> pokreniLokalniOcrZaPonudjaca(int index) async {
+    print('=== KLIK OCR DUGME ===');
     final doc = dokumentiPonudjaca[index];
     final dokumentInfo = dokumentiPonudjacaInfo[index];
 
@@ -2657,7 +2657,7 @@ class _MainScreenState extends State<MainScreen> {
           filename: doc.name,
         ),
       );
-
+      print('=== SALJEM NA OCR SERVER ===');
       final streamedResponse = await request.send();
       final response = await http.Response.fromStream(streamedResponse);
 
@@ -2666,21 +2666,21 @@ class _MainScreenState extends State<MainScreen> {
       }
 
       final Map<String, dynamic> data = jsonDecode(response.body);
-      final ocrText = data['text']?.toString() ?? '';
       final ocrPages = data['pages'] is int
           ? data['pages'] as int
           : int.tryParse(data['pages']?.toString() ?? '');
+      final ocrPagesJson = data['pages_text'] ?? [];
 
-      if (ocrText.trim().length < 20) {
-        throw Exception('OCR nije pronašao dovoljno čitljivog teksta.');
+      if (ocrPagesJson is! List || ocrPagesJson.isEmpty) {
+        throw Exception('OCR nije vratio tekst po stranicama.');
       }
 
       await Supabase.instance.client
           .from('dokumenti_ponuda')
           .update({
-            'ocr_text': ocrText,
             'ocr_status': 'uspjesno',
             'ocr_pages': ocrPages,
+            'ocr_pages_json': ocrPagesJson,
           })
           .eq('id', dokumentId);
 
@@ -2690,24 +2690,22 @@ class _MainScreenState extends State<MainScreen> {
         dokumentiPonudjacaInfo[index] = {
           ...dokumentInfo,
           'ocr_status': 'uspjesno',
-          'ocr_text': ocrText,
           'ocr_pages': ocrPages,
+          'ocr_pages_json': ocrPagesJson,
         };
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'OCR završen: ${ocrPages ?? 0} stranica, ${ocrText.length} karaktera.',
+            'OCR uspješno obrađen. Broj stranica: ${ocrPages ?? 0}.',
           ),
         ),
       );
     } catch (e) {
       await Supabase.instance.client
           .from('dokumenti_ponuda')
-          .update({
-            'ocr_status': 'greska',
-          })
+          .update({'ocr_status': 'greska'})
           .eq('id', dokumentId);
 
       if (!mounted) return;
@@ -2719,9 +2717,9 @@ class _MainScreenState extends State<MainScreen> {
         };
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Greška lokalnog OCR-a: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Greška lokalnog OCR-a: $e')));
     }
   }
 

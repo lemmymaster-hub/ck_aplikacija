@@ -27,7 +27,7 @@ async def ocr_pdf(file: UploadFile = File(...)):
         poppler_path=r"C:\poppler\Library\bin"
     )
 
-    full_text = ""
+    pages_text = []
 
     for i, image in enumerate(images):
         temp_path = os.path.join(tempfile.gettempdir(), f"easyocr_page_{i}.jpg")
@@ -35,11 +35,22 @@ async def ocr_pdf(file: UploadFile = File(...)):
 
         result = reader.readtext(temp_path, detail=0, paragraph=True)
 
+        page_text = ""
         for text in result:
-            full_text += text + "\n"
+            page_text += text + "\n"
+
+        pages_text.append({
+            "page": i + 1,
+            "text": page_text
+        })
+
+        try:
+            os.remove(temp_path)
+        except:
+            pass
 
     return {
         "success": True,
         "pages": len(images),
-        "text": full_text
+        "pages_text": pages_text
     }
